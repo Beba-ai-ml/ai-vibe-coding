@@ -3,6 +3,9 @@
 Zbudowałem 6 projektów AI. Większość kodu napisał Claude.
 Oto kompletny kurs jak to robić — od pierwszego prompta po orkiestrację 6-agentowego teamu.
 
+> **Nie wiesz od czego zacząć? Nie masz pomysłu na stack, architekturę, ani jak ugryźć swój projekt?**
+> To normalne. Nie musisz wiedzieć wszystkiego na starcie. Otwórz Claude Code i po prostu opisz co chcesz zbudować — Claude pomoże Ci wymyślić jak to zrobić. Zapytaj: *"Chcę zrobić X, ale nie wiem jakiego stacku użyć ani jak to zaprojektować. Pomóż mi to przemyśleć."* — i razem dojdziecie do planu. Vibe coding zaczyna się od rozmowy, nie od wiedzy.
+
 ```mermaid
 graph LR
     A[Pierwszy Prompt] --> B[Kontekst]
