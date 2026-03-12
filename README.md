@@ -264,6 +264,40 @@ Template: [templates/.context/](templates/.context/)
 
 💡 **Tip:** Możesz wygenerować `.context/` automatycznie. Wystarczy powiedzieć Claude'owi: "Przeskanuj ten projekt i stwórz folder .context/ z INDEX.md, KNOWLEDGE.md i STATE.md."
 
+### `/start` i `/dump` — komendy zarządzania kontekstem
+
+Dwie komendy, które powinny być Twoim odruchem na początku i końcu każdej sesji:
+
+**`/start`** — ładuje cały kontekst projektu na starcie sesji. Claude czyta `.context/INDEX.md`, `KNOWLEDGE.md`, `STATE.md` i od razu wie: jaki jest stack, co działa, co jest w trakcie, jakie są znane problemy. Bez tego każda sesja zaczyna się od zera — Claude nie wie nic o Twoim projekcie i musisz mu wszystko tłumaczyć od nowa.
+
+```
+Ty: /start
+Claude: [czyta .context/, ładuje wiedzę]
+  → "Projekt: Snake DQN Multi-Env. Stack: Python, PyTorch, pygame.
+     Co działa: środowisko gry, agent Dueling DQN.
+     WIP: testowanie reward shaping.
+     Gotowy do pracy."
+```
+
+**`/dump`** — zapisuje wiedzę zdobytą w trakcie sesji do `.context/`. Użyj na końcu sesji, po istotnych zmianach, albo kiedy Claude odkrył coś ważnego o projekcie. To jak zapisanie stanu gry — następna sesja startuje z pełnym kontekstem.
+
+```
+Ty: /dump
+Claude: [skanuje projekt, aktualizuje KNOWLEDGE.md i STATE.md]
+  → "Zaktualizowałem STATE.md: dodano nowy reward shaping z odległością
+     od jabłka, znany problem z memory leak w wizualizacji."
+```
+
+⚠️ **Ważne:** Bez `/start` na początku sesji, Claude nie wie nic. Bez `/dump` na końcu, Claude zapomni wszystko co odkrył. Te dwie komendy to Twoja pamięć między sesjami.
+
+**Workflow:**
+```
+1. Otwierasz sesję   → /start (Claude ładuje kontekst)
+2. Pracujesz         → budujesz, debugujesz, testujesz
+3. Kończysz sesję    → /dump (Claude zapisuje co się zmieniło)
+4. Następna sesja    → /start (Claude jest od razu w temacie)
+```
+
 ### `lessons.md` — uczenie Claude'a na błędach
 
 To jest Twoja tajna broń. Plik, w którym zapisujesz lekcje wyciągnięte z błędów — Twoich i Claude'a. Każda lekcja ma format:
@@ -483,19 +517,78 @@ Trzy pliki powstają jednocześnie. Zero konfliktów, bo każdy agent pisze inny
 
 ⚠️ **Uwaga:** Agenty muszą pracować na rozdzielnych plikach. Jeśli dwa agenty edytują ten sam plik — będą konflikty i chaos. Planuj podział pracy ZANIM odpalisz agentów.
 
-### `/krytyk` — recenzja kodu przez AI
+### `/krytyk` — recenzja kodu przez dwóch niezależnych AI krytyków
 
-Jedną z najcenniejszych umiejętności jest recenzja kodu ZANIM go zmergeujesz. `/krytyk` to skill (custom command), który uruchamia dwóch niezależnych krytyków — każdy recenzuje Twoje zmiany z innej perspektywy.
+Jedną z najcenniejszych umiejętności jest recenzja kodu ZANIM go zmergeujesz. `/krytyk` to skill (custom command), który uruchamia **dwóch niezależnych krytyków na modelu opus** — każdy recenzuje Twoje zmiany z innej perspektywy. Potem dyskutują ze sobą aż do konsensusu.
 
-Jak to działa:
+**Jak to wygląda w praktyce:**
 
-1. Masz zmiany w kodzie (staged w git albo opisane w konwersacji)
-2. Mówisz: `/krytyk`
-3. Claude uruchamia 2 agentów-krytyków
-4. Każdy recenzuje niezależnie — szuka bugów, problemów z architekturą, edge case'ów
-5. Dostajesz skonsolidowany raport
+```
+Ty: Chcę dodać NoisyNet exploration do mojego DQN agenta.
+     [opisujesz zmiany albo masz je staged w git]
 
-Przykład z prawdziwego projektu — RSVP PWA reader:
+Ty: /krytyk
+
+Claude: Uruchamiam 2 krytyków...
+
+Krytyk 1 (Teoria/Algorytmy):
+┌──────────────────────────────────────────────────────────┐
+│ KRYTYCZNY: Survival reward 0.1 z gamma=0.99 daje         │
+│ Q-contribution = 0.1/(1-0.99) = 10.0                     │
+│ Reward za przejście pipe: 1.0 * gamma^67 = 0.51          │
+│ Stosunek 20:1 — agent racjonalnie IGNORUJE pipe'y.       │
+│ FIX: Zmniejsz survival reward do 0.01                    │
+│                                                           │
+│ WAŻNY: NoisyNet na inicjalizacji produkuje BIASED        │
+│ exploration (wszystkie sigma startują z tą samą wartością)│
+│ FIX: Random warmup przez pierwsze N kroków, potem NoisyNet│
+│                                                           │
+│ WAŻNY: CNN grad_clip=1.0 za niski — gradienty CNN        │
+│ routynowo mają normy 5-15. Efektywnie obcinasz LR 5-15x. │
+│ FIX: grad_clip=10.0 dla CNN                              │
+└──────────────────────────────────────────────────────────┘
+
+Krytyk 2 (Inżynieria/Implementacja):
+┌──────────────────────────────────────────────────────────┐
+│ BUG: select_action() zawsze wywołuje model.train() na    │
+│ końcu — psuje zewnętrzne bloki eval(). Deterministic     │
+│ evaluation biegnie Z szumem NoisyNet cały czas.          │
+│ FIX: if not deterministic: model.train()                 │
+│                                                           │
+│ BUG: action_repeat=4 + train_every_n_steps=4 =           │
+│ efektywny update ratio 1/16 game frames, nie 1/4.        │
+│ FIX: train_every_n_steps=1 gdy action_repeat > 1         │
+│                                                           │
+│ BUG: watch.py nie przekazuje deterministic=True.          │
+│ Wytrenowany agent wygląda losowo przy pokazie.            │
+│ FIX: select_action(state, deterministic=True)             │
+└──────────────────────────────────────────────────────────┘
+
+Konsensus: 6 issues, 3 krytyczne. Lista fixów...
+```
+
+To jest **prawdziwy wynik** z recenzji projektu Flappy Bird AI. Bez `/krytyk` te bugi trafiłyby do treningu — godziny zmarnowane na debugging "dlaczego agent się nie uczy", a odpowiedź to zły grad_clip i zły survival reward.
+
+**Kiedy używać `/krytyk`:**
+- ✅ Nowa architektura agenta RL
+- ✅ Zmiana w wielu plikach naraz
+- ✅ Cokolwiek związanego z reward shaping / hyperparams
+- ✅ PWA, service workery, cache'owanie
+- ❌ Zmiana koloru buttona
+- ❌ Poprawka literówki w README
+
+**Prawdziwe statystyki:**
+- RSVP PWA review: **20 issues** znalezionych (brakujący pdf.worker.js, błędne font URL, cache versioning)
+- Flappy Bird AI: **6 bugów** (reward imbalance, grad_clip, NoisyNet warmup, eval mode, action_repeat, watch.py)
+- Zadania (math splitter): **2 krytyczne** (scrollable container + absolute overlay conflict, long-press/drag race condition)
+
+⚠️ **Zasada:** Im więcej plików zmienia Twoja zmiana, tym bardziej potrzebujesz `/krytyk`. Jeden plik? Opcjonalnie. Trzy pliki? Zdecydowanie. Nowa architektura? **Obowiązkowo.**
+
+**Z perspektywy jednego projektu:** RSVP PWA reader miał 20 issues. Bez krytyków każdy z nich to potencjalny dzień debugowania. 20 dni → 1 godzina recenzji. To jest ROI `/krytyk`.
+
+Pełna sesja z komentarzem: [examples/03-sesja-krytyk.md](examples/03-sesja-krytyk.md)
+
+Przykład z prawdziwego projektu — jak wyglądał raport krytyków dla RSVP PWA reader:
 
 ```
 Critic 1 znalazł:
@@ -595,17 +688,52 @@ To jest moment, w którym przestajesz być programistą-z-asystentem i stajesz s
 
 ### CEO Agent — Twój execution engine
 
-`/ceo` to skill, który zamienia jedno high-level polecenie w kompletny plan wykonania z podziałem na role, fazy i agentów.
+`/ceo` to skill, który zamienia jedno high-level polecenie w kompletny plan wykonania z podziałem na role, fazy i agentów. Ty mówisz CO chcesz. CEO decyduje JAK to zbudować.
 
-Jak to działa krok po kroku:
+**Jak to wygląda w praktyce:**
+
+```
+Ty: /ceo Zbuduj grę Tetris z AI agentem, który uczy się grać.
+    Tetris musi mieć pełną logikę (7 tetromino, rotation, line clear).
+    AI widzi board state i wybiera placement (kolumna + rotacja).
+
+CEO: [analizuje zadanie, projektuje team]
+
+┌─────────────────────────────────────────────────────────────┐
+│  CEO EXECUTION PLAN: Tetris AI                              │
+│                                                             │
+│  Team:                                                      │
+│  | # | Rola            | Model  | Pliki              | Faza │
+│  | 1 | Architekt       | opus   | ARCHITECTURE.md    | 1    │
+│  | 2 | Game Engine     | sonnet | board.py, pieces.py| 2    │
+│  | 3 | AI/RL Dev       | opus   | agent.py, model.py | 2    │
+│  | 4 | Renderer        | sonnet | renderer.py        | 2    │
+│  | 5 | Training Loop   | sonnet | train.py, cli.py   | 2    │
+│  | 6 | Tester + Krytyk | opus   | tests/, review     | 3    │
+│                                                             │
+│  Faza 1: Architekt (sam)                                    │
+│  Faza 2: Game + AI + Renderer + Training (równolegle)       │
+│  Faza 3: Tester + Krytyk (po fazie 2)                       │
+│                                                             │
+│  Estimated agents: 6                                        │
+│  Spawning...                                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Ty nie musisz wiedzieć jakie pliki stworzyć, ile agentów uruchomić, ani w jakiej kolejności. CEO to wie. Ty jesteś CTO — zatwierdzasz plan, a CEO go wykonuje.
+
+**Jak to działa krok po kroku:**
 
 1. **Analiza zadania** — CEO czyta Twoje polecenie i CLAUDE.md projektu
 2. **Projektowanie teamu** — tworzy org chart: kto, co, jakim modelem, w jakiej kolejności
 3. **Faza 1: Architektura** — agent-architekt projektuje API, interfejsy, strukturę plików
-4. **Faza 2: Implementacja** — wielu agentów równolegle piszących kod
-5. **Faza 3: Integracja** — agent łączy wszystko w całość
-6. **Faza 4: Review** — agent-krytyk recenzuje wynik
-7. **Raport** — CEO podsumowuje co zrobiono, co wymaga uwagi
+4. **Faza 2: Implementacja** — wielu agentów równolegle piszących kod (każdy ma przypisane pliki)
+5. **Faza 3: Integracja i Review** — agent łączy wszystko, krytyk recenzuje wynik
+6. **Raport** — CEO podsumowuje co zrobiono, co wymaga uwagi
+
+**Co Ty robisz w tym czasie?** Nic. Albo pijesz kawę. Albo pracujesz nad czymś innym. CEO odpala agentów w tle i informuje Cię jak skończą. Ty interweniujesz tylko gdy trzeba podjąć decyzję (np. "afterstate vs standard DQN?").
+
+⚠️ **Ważne:** `/ceo` nie daje perfekcyjnego wyniku za pierwszym razem. Daje solidną bazę, która wymaga 1-2 rund poprawek. Ale ta baza powstaje w godzinę zamiast tygodnia.
 
 ### Projektowanie teamu
 
